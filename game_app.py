@@ -1,30 +1,58 @@
 """
 Arène — gestion de compétitions de jeux vidéo avec Streamlit.
 
-- L'admin propose un jeu (nombre de joueurs par match, qualifiés par match).
-- Les participants s'inscrivent avec un pseudo.
+- L'admin propose un jeu (joueurs par match, qualifiés par match, date, heure, lieu).
+- Les participants s'inscrivent avec un pseudo ET une adresse e-mail
+  (une même adresse ne peut s'inscrire qu'une seule fois par compétition).
 - L'admin lance la compétition : l'app génère les tours d'élimination.
   * Jeu en duel (2 joueurs par match) : 1 gagnant qualifié par match.
   * Jeu à 3 joueurs ou plus : les joueurs sont répartis en groupes de la
     taille du jeu, les meilleurs de chaque match se qualifient.
 - Le dernier tour (finale) réunit tous les joueurs restants dans un seul match.
+- L'accès admin exige l'adresse e-mail d'un admin + le mot de passe admin.
 
 Lancement : streamlit run app.py
-Mot de passe admin : variable d'environnement ADMIN_PASSWORD ou
-st.secrets["ADMIN_PASSWORD"] (par défaut : "admin").
+
+Configuration (variables d'environnement ou st.secrets) :
+  ADMIN_PASSWORD : mot de passe admin (par défaut : "admin", À CHANGER)
+  ADMIN_EMAILS   : adresses admin séparées par des virgules
+                   (par défaut : ninon.ombeandonga@2030.ucac-icam.com)
 """
 
+import datetime
 import math
 import os
 import random
+import re
 import sqlite3
 from contextlib import closing
 
-import streamlit as st  # type: ignore[import-not-found]
+import streamlit as st
 
 DB_PATH = os.environ.get("ARENA_DB", "arena.db")
+DEFAULT_ADMIN_EMAILS = "ninon.ombeandonga@2030.ucac-icam.com"
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 st.set_page_config(page_title="Arène", page_icon="🎮", layout="wide")
+
+
+# ----------------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------------
+def get_setting(name, default):
+    try:
+        return st.secrets[name]
+    except Exception:
+        return os.environ.get(name, default)
+
+
+def admin_emails():
+    raw = get_setting("ADMIN_EMAILS", DEFAULT_ADMIN_EMAILS)
+    return {e.strip().lower() for e in str(raw).split(",") if e.strip()}
+
+
+def valid_email(email):
+    return bool(EMAIL_RE.match(email))
 
 
 # ----------------------------------------------------------------------------
@@ -49,6 +77,12 @@ def execute(sql, params=()):
         return cur.lastrowid
 
 
+def ensure_column(conn, table, column, ddl):
+    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def init_db():
     with closing(get_conn()) as conn:
         conn.executescript(
@@ -61,12 +95,16 @@ def init_db():
                 qualifiers INTEGER NOT NULL DEFAULT 1,
                 max_players INTEGER,
                 status TEXT NOT NULL DEFAULT 'inscriptions',
-                current_round INTEGER NOT NULL DEFAULT 0
+                current_round INTEGER NOT NULL DEFAULT 0,
+                event_date TEXT,
+                event_time TEXT,
+                location TEXT DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS participants (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
                 pseudo TEXT NOT NULL,
+                email TEXT,
                 UNIQUE(game_id, pseudo)
             );
             CREATE TABLE IF NOT EXISTS matches (
@@ -85,7 +123,56 @@ def init_db():
             );
             """
         )
+        # Migration des bases créées avec une version précédente
+        ensure_column(conn, "games", "event_date", "TEXT")
+        ensure_column(conn, "games", "event_time", "TEXT")
+        ensure_column(conn, "games", "location", "TEXT DEFAULT ''")
+        ensure_column(conn, "participants", "email", "TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_participant_email "
+            "ON participants(game_id, email)"
+        )
         conn.commit()
+
+
+# ----------------------------------------------------------------------------
+# Planning (date, heure, lieu)
+# ----------------------------------------------------------------------------
+JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
+        "septembre", "octobre", "novembre", "décembre"]
+
+
+def format_schedule(game):
+    parts = []
+    if game["event_date"]:
+        d = datetime.date.fromisoformat(game["event_date"])
+        txt = f"{JOURS[d.weekday()]} {d.day} {MOIS[d.month - 1]} {d.year}"
+        if game["event_time"]:
+            txt += f" à {game['event_time']}"
+        parts.append("📅 " + txt)
+    else:
+        parts.append("📅 Date à définir")
+    parts.append("📍 " + (game["location"] if game["location"] else "Lieu à définir"))
+    return " · ".join(parts)
+
+
+def update_schedule(game_id, date_value, time_value, location):
+    execute(
+        "UPDATE games SET event_date = ?, event_time = ?, location = ? WHERE id = ?",
+        (date_value.isoformat() if date_value else None,
+         time_value.strftime("%H:%M") if date_value and time_value else None,
+         location.strip(), game_id),
+    )
+
+
+def schedule_defaults(game=None):
+    if game and game["event_date"]:
+        d = datetime.date.fromisoformat(game["event_date"])
+        t = (datetime.time.fromisoformat(game["event_time"])
+             if game["event_time"] else datetime.time(18, 0))
+        return d, t, False
+    return datetime.date.today(), datetime.time(18, 0), bool(game)
 
 
 # ----------------------------------------------------------------------------
@@ -225,6 +312,14 @@ STATUS_ICON = {"inscriptions": "🟢 Inscriptions ouvertes", "en cours": "🟠 E
 # ----------------------------------------------------------------------------
 # Affichage
 # ----------------------------------------------------------------------------
+def flash(message=None):
+    """Mémorise un message à afficher après un rerun, ou l'affiche."""
+    if message:
+        st.session_state["flash"] = message
+    elif "flash" in st.session_state:
+        st.success(st.session_state.pop("flash"))
+
+
 def render_match(game, match, is_admin):
     players = match_players(match["id"])
     title = "🏆 Finale" if match["is_final"] else f"Match {match['idx']}"
@@ -301,6 +396,7 @@ def render_game_header(game):
     st.caption(f"{STATUS_ICON.get(game['status'], game['status'])} · "
                f"{format_label(game)} · {count} inscrit(s)"
                + (f" / {game['max_players']}" if game["max_players"] else ""))
+    st.markdown(f"**{format_schedule(game)}**")
     if game["description"]:
         st.write(game["description"])
     return count
@@ -310,6 +406,7 @@ def render_game_header(game):
 # Pages
 # ----------------------------------------------------------------------------
 def page_public():
+    flash()
     games = query("SELECT * FROM games ORDER BY id DESC")
     if not games:
         st.info("Aucune compétition pour le moment. Revenez bientôt !")
@@ -326,20 +423,31 @@ def page_public():
             st.warning("Les inscriptions sont complètes.")
         else:
             with st.form(f"register_{game_id}", clear_on_submit=True):
-                pseudo = st.text_input("Ton pseudo")
+                pseudo = st.text_input("Ton pseudo *")
+                email = st.text_input("Ton adresse e-mail *")
                 ok = st.form_submit_button("S'inscrire")
             if ok:
                 pseudo = pseudo.strip()
-                if not pseudo:
-                    st.error("Entre un pseudo.")
+                email = email.strip().lower()
+                if not pseudo or not email:
+                    st.error("Le pseudo et l'adresse e-mail sont obligatoires.")
+                elif not valid_email(email):
+                    st.error("Adresse e-mail invalide.")
+                elif query("SELECT 1 FROM participants WHERE game_id = ? AND email = ?",
+                           (game_id, email)):
+                    st.error("Cette adresse e-mail est déjà inscrite à cette compétition. "
+                             "Une personne ne peut s'inscrire qu'une seule fois.")
+                elif query("SELECT 1 FROM participants WHERE game_id = ? "
+                           "AND LOWER(pseudo) = LOWER(?)", (game_id, pseudo)):
+                    st.error("Ce pseudo est déjà pris pour cette compétition.")
                 else:
                     try:
-                        execute("INSERT INTO participants (game_id, pseudo) VALUES (?,?)",
-                                (game_id, pseudo))
-                        st.success(f"Bienvenue, {pseudo} ! Tu es inscrit.")
+                        execute("INSERT INTO participants (game_id, pseudo, email) "
+                                "VALUES (?,?,?)", (game_id, pseudo, email))
+                        flash(f"Bienvenue, {pseudo} ! Tu es inscrit.")
                         st.rerun()
                     except sqlite3.IntegrityError:
-                        st.error("Ce pseudo est déjà inscrit à cette compétition.")
+                        st.error("Inscription impossible : pseudo ou e-mail déjà utilisé.")
 
     parts = query("SELECT pseudo FROM participants WHERE game_id = ? ORDER BY id", (game_id,))
     with st.expander(f"Participants ({len(parts)})"):
@@ -349,28 +457,42 @@ def page_public():
 
 
 def admin_login():
-    expected = os.environ.get("ADMIN_PASSWORD", "admin")
-    try:
-        expected = st.secrets["ADMIN_PASSWORD"]
-    except Exception:
-        pass
+    st.info("Accès réservé aux administrateurs.")
     with st.form("login"):
+        email = st.text_input("Adresse e-mail admin")
         pwd = st.text_input("Mot de passe admin", type="password")
         ok = st.form_submit_button("Connexion")
     if ok:
-        if pwd == expected:
+        expected = str(get_setting("ADMIN_PASSWORD", "admin"))
+        if email.strip().lower() in admin_emails() and pwd == expected:
             st.session_state["admin"] = True
+            st.session_state["admin_email"] = email.strip().lower()
             st.rerun()
         else:
-            st.error("Mot de passe incorrect.")
+            st.error("Adresse e-mail ou mot de passe incorrect.")
+
+
+def schedule_form_fields(game=None):
+    d, t, undefined = schedule_defaults(game)
+    c1, c2 = st.columns(2)
+    date_value = c1.date_input("Jour", value=d)
+    time_value = c2.time_input("Heure", value=t)
+    location = st.text_input("Lieu", value=(game["location"] if game else "") or "",
+                             placeholder="Ex : Salle informatique B12")
+    tbd = st.checkbox("Jour et heure à définir plus tard", value=undefined)
+    return (None if tbd else date_value), time_value, location
 
 
 def page_admin():
+    flash()
     if not st.session_state.get("admin"):
         admin_login()
         return
-    if st.button("Se déconnecter"):
+    c1, c2 = st.columns([4, 1])
+    c1.caption(f"Connecté : {st.session_state.get('admin_email', '')}")
+    if c2.button("Se déconnecter"):
         st.session_state["admin"] = False
+        st.session_state.pop("admin_email", None)
         st.rerun()
 
     with st.expander("➕ Proposer un nouveau jeu", expanded=not query("SELECT 1 FROM games")):
@@ -383,6 +505,7 @@ def page_admin():
                                    min_value=1, max_value=15, value=1)
             maxp = st.number_input("Nombre max d'inscrits (0 = illimité)",
                                    min_value=0, value=0)
+            date_value, time_value, location = schedule_form_fields()
             ok = st.form_submit_button("Créer la compétition")
         if ok:
             if not name.strip():
@@ -390,13 +513,14 @@ def page_admin():
             elif size > 2 and qual >= size:
                 st.error("Les qualifiés par match doivent être inférieurs aux joueurs par match.")
             else:
-                execute(
+                gid = execute(
                     "INSERT INTO games (name, description, match_size, qualifiers, max_players) "
                     "VALUES (?,?,?,?,?)",
                     (name.strip(), desc.strip(), int(size),
                      1 if size == 2 else int(qual), int(maxp) or None),
                 )
-                st.success("Compétition créée.")
+                update_schedule(gid, date_value, time_value, location)
+                flash("Compétition créée.")
                 st.rerun()
 
     games = query("SELECT * FROM games ORDER BY id DESC")
@@ -408,13 +532,22 @@ def page_admin():
     game = get_game(game_id)
     count = render_game_header(game)
 
+    with st.expander("🗓️ Modifier le jour, l'heure et le lieu"):
+        with st.form(f"schedule_{game_id}"):
+            date_value, time_value, location = schedule_form_fields(game)
+            saved = st.form_submit_button("Enregistrer le planning")
+        if saved:
+            update_schedule(game_id, date_value, time_value, location)
+            flash("Planning mis à jour.")
+            st.rerun()
+
     parts = query("SELECT * FROM participants WHERE game_id = ? ORDER BY id", (game_id,))
 
     if game["status"] == "inscriptions":
         st.markdown("**Participants inscrits**")
         for p in parts:
             c1, c2 = st.columns([5, 1])
-            c1.write(p["pseudo"])
+            c1.write(f"{p['pseudo']} — {p['email'] or 'e-mail non renseigné'}")
             if c2.button("🗑️", key=f"del_p_{p['id']}"):
                 execute("DELETE FROM participants WHERE id = ?", (p["id"],))
                 st.rerun()
@@ -424,6 +557,9 @@ def page_admin():
             start_competition(game_id)
             st.rerun()
     else:
+        with st.expander(f"Participants et e-mails ({len(parts)})"):
+            for p in parts:
+                st.write(f"{p['pseudo']} — {p['email'] or 'e-mail non renseigné'}")
         render_podium(game)
         render_rounds(game, is_admin=True)
         if st.button("↩️ Réinitialiser (efface les matchs, rouvre les inscriptions)"):
