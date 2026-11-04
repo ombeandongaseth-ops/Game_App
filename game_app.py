@@ -16,7 +16,8 @@ Lancement : streamlit run app.py
 Configuration (variables d'environnement ou st.secrets) :
   ADMIN_PASSWORD : mot de passe admin (par défaut : "admin", À CHANGER)
   ADMIN_EMAILS   : adresses admin séparées par des virgules
-                   (par défaut : ninon.ombeandonga@2030.ucac-icam.com)
+                   (par défaut : ninon.ombeandonga@2030.ucac-icam.com,
+                   jac.de@2030.ucac-icam.com)
 """
 
 import datetime
@@ -30,7 +31,7 @@ from contextlib import closing
 import streamlit as st
 
 DB_PATH = os.environ.get("ARENA_DB", "arena.db")
-DEFAULT_ADMIN_EMAILS = "ninon.ombeandonga@2030.ucac-icam.com"
+DEFAULT_ADMIN_EMAILS = "ninon.ombeandonga@2030.ucac-icam.com,jac.de@2030.ucac-icam.com"
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 st.set_page_config(page_title="Arène", page_icon="🎮", layout="wide")
