@@ -1,2 +1,1 @@
-# Game_App
-Gestion des affrontements 
+streamlit>=1.32
