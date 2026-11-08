@@ -594,7 +594,7 @@ def issue_code(email, purpose):
                      (email, purpose))
         conn.execute(
             "INSERT INTO verification_codes (email, purpose, code_hash, salt, expires_at, "
-            "attempts, created_at) VALUES (?,?,?,?,0,?)",
+            "attempts, created_at) VALUES (?,?,?,?,?,0,?)",
             (email, purpose, hash_code(code, salt), salt.hex(),
              _iso(_now() + datetime.timedelta(minutes=CODE_TTL_MINUTES)), _iso(_now())))
     return code, ""
@@ -697,7 +697,7 @@ def participants_csv(parts):
     writer.writerow(["Pseudo", "E-mail"])
     for p in parts:
         writer.writerow([_csv_safe(p["pseudo"]), _csv_safe(p["email"])])
-    return "" + buf.getvalue()  # BOM : accents corrects dans Excel
+    return "\ufeff" + buf.getvalue()  # BOM : accents corrects dans Excel
 
 def leave_game(game_id, user_id):
     """Retire un joueur UNIQUEMENT si les inscriptions sont encore ouvertes.
@@ -943,7 +943,7 @@ def page_public():
     game = get_game(game_id)
     count = render_game_header(game)
 
-if game["status"] == "inscriptions":
+    if game["status"] == "inscriptions":
         user = current_user()
         full = game["max_players"] and count >= game["max_players"]
         if user and is_participating(game_id, user["id"]):
@@ -973,13 +973,13 @@ if game["status"] == "inscriptions":
                          if sent else "(L'e-mail de confirmation n'a pas pu être envoyé.)"))
                 st.rerun()
 
-if game["status"] != "inscriptions":
+    if game["status"] != "inscriptions":
         user = current_user()
         status = my_status(game, user["id"]) if user else ""
         if status:
             st.info(f"🎯 Ton parcours : {status}")
 
-parts = query("SELECT pseudo FROM participants WHERE game_id = ? ORDER BY id", (game_id,))
+    parts = query("SELECT pseudo FROM participants WHERE game_id = ? ORDER BY id", (game_id,))
     with st.expander(f"Participants ({len(parts)})"):
         st.write(", ".join(p["pseudo"] for p in parts) or "Personne pour l'instant.")
     render_podium(game)
@@ -1018,7 +1018,7 @@ def activate_and_login(row, message):
     st.rerun()
 
 def render_code_entry(email, purpose, submit_label, on_success, on_cancel=None):
-    """Bloc commun aux trois flux « saisir un code reçu par e-mail »
+    """Bloc commun aux flux « saisir un code reçu par e-mail »
     (vérification de compte, connexion admin). Le flux « mot de passe oublié »
     garde son propre formulaire car il contient des champs supplémentaires."""
     st.info(f"📧 Un code à 6 chiffres a été envoyé à **{email}**. "
@@ -1052,11 +1052,11 @@ def render_verification(email):
             st.session_state.pop("pending_verify", None)
             st.error("Ce compte n'existe plus, recommence l'inscription.")
 
-def cancel():
+    def cancel():
         st.session_state.pop("pending_verify", None)
         rerun_fragment()
 
-render_code_entry(email, "verify", "Activer mon compte", finish, cancel)
+    render_code_entry(email, "verify", "Activer mon compte", finish, cancel)
 
 def password_error(pwd, pwd2):
     if len(pwd) < MIN_PASSWORD_LENGTH:
@@ -1105,15 +1105,15 @@ def page_account():
             st.rerun()
         return
 
-pending = st.session_state.get("pending_verify")
+    pending = st.session_state.get("pending_verify")
     if pending:
         render_verification(pending)
         return
 
-tab_login, tab_create, tab_forgot = st.tabs(
+    tab_login, tab_create, tab_forgot = st.tabs(
         ["Se connecter", "Créer un compte", "Mot de passe oublié"])
 
-with tab_login:
+    with tab_login:
         with st.form("user_login"):
             email = st.text_input("Adresse e-mail")
             pwd = st.text_input("Mot de passe", type="password")
@@ -1140,7 +1140,7 @@ with tab_login:
                       "pour participer.", "account")
                 st.rerun()
 
-with tab_create:
+    with tab_create:
         with st.form("user_create"):
             pseudo = st.text_input("Pseudo *")
             email = st.text_input("Adresse e-mail *")
@@ -1190,7 +1190,7 @@ with tab_create:
                                     (email,))
                             st.error(message)
 
-with tab_forgot:
+    with tab_forgot:
         if not verification_enabled():
             st.info("La réinitialisation par e-mail n'est pas disponible pour le moment. "
                     "Contacte un administrateur.")
@@ -1247,14 +1247,14 @@ def admin_login():
             st.session_state.pop("admin_pending", None)
             st.rerun()
 
-def cancel():
+        def cancel():
             st.session_state.pop("admin_pending", None)
             rerun_fragment()
 
-render_code_entry(pending, "admin", "Valider", finish, cancel)
+        render_code_entry(pending, "admin", "Valider", finish, cancel)
         return
 
-with st.form("login"):
+    with st.form("login"):
         email = st.text_input("Adresse e-mail admin")
         pwd = st.text_input("Mot de passe admin", type="password")
         ok = st.form_submit_button("Connexion admin")
@@ -1309,7 +1309,7 @@ def page_admin():
         st.session_state.pop("admin_email", None)
         st.rerun()
 
-if not smtp_config():
+    if not smtp_config():
         st.warning("⚠️ Les e-mails sont désactivés : aucun serveur SMTP n'est configuré "
                    "(SMTP_HOST, SMTP_USER, SMTP_PASSWORD). Les comptes sont créés sans "
                    "vérification d'e-mail, le mot de passe oublié est indisponible et "
@@ -1319,7 +1319,7 @@ if not smtp_config():
                    "soit pas lisible dans le fichier, définis ADMIN_PASSWORD "
                    "(variable d'environnement ou st.secrets).")
 
-with st.expander("➕ Proposer un nouveau jeu", expanded=not query("SELECT 1 FROM games")):
+    with st.expander("➕ Proposer un nouveau jeu", expanded=not query("SELECT 1 FROM games")):
         with st.form("new_game", clear_on_submit=True):
             name = st.text_input("Nom du jeu")
             desc = st.text_area("Description / règles")
@@ -1351,7 +1351,7 @@ with st.expander("➕ Proposer un nouveau jeu", expanded=not query("SELECT 1 FRO
                 flash("Compétition créée.", "admin")
                 st.rerun()
 
-games = query("SELECT * FROM games ORDER BY id DESC")
+    games = query("SELECT * FROM games ORDER BY id DESC")
     if not games:
         return
     labels = {g["id"]: f"{g['name']} — {g['status']}" for g in games}
@@ -1360,7 +1360,7 @@ games = query("SELECT * FROM games ORDER BY id DESC")
     game = get_game(game_id)
     count = render_game_header(game)
 
-with st.expander("🗓️ Modifier le jour, l'heure, le lieu et les consignes"):
+    with st.expander("🗓️ Modifier le jour, l'heure, le lieu et les consignes"):
         with st.form(f"schedule_{game_id}"):
             date_value, time_value, location = schedule_form_fields(game)
             method = st.text_area("Consignes pour les participants (facultatif)",
@@ -1383,9 +1383,9 @@ with st.expander("🗓️ Modifier le jour, l'heure, le lieu et les consignes"):
             flash(msg, "admin")
             st.rerun()
 
-parts = query("SELECT * FROM participants WHERE game_id = ? ORDER BY id", (game_id,))
+    parts = query("SELECT * FROM participants WHERE game_id = ? ORDER BY id", (game_id,))
 
-with st.expander("📣 Envoyer une annonce aux inscrits"):
+    with st.expander("📣 Envoyer une annonce aux inscrits"):
         with st.form(f"announce_{game_id}", clear_on_submit=True):
             subject = st.text_input("Objet")
             body = st.text_area("Message")
@@ -1405,7 +1405,7 @@ with st.expander("📣 Envoyer une annonce aux inscrits"):
                       + (f" — {failed} échec(s) : {err}" if failed else "."), "admin")
                 st.rerun()
 
-with st.expander("📬 Historique des notifications"):
+    with st.expander("📬 Historique des notifications"):
         logs = query("SELECT * FROM notifications WHERE game_id = ? OR game_id IS NULL "
                      "ORDER BY id DESC LIMIT 30", (game_id,))
         if not logs:
@@ -1416,7 +1416,7 @@ with st.expander("📬 Historique des notifications"):
                      f"{r['sent']}/{r['total']} envoyé(s)"
                      + (f" — {r['error']}" if r["failed"] and r["error"] else ""))
 
-c_remind, c_csv = st.columns(2)
+    c_remind, c_csv = st.columns(2)
     if c_remind.button("🔔 Envoyer un rappel du planning", key=f"remind_{game_id}"):
         sent, failed, err = notify(game_id, "rappel", planning_messages(game, reminder=True))
         if sent or failed:
@@ -1429,7 +1429,7 @@ c_remind, c_csv = st.columns(2)
                           file_name=f"participants-{game_id}.csv", mime="text/csv",
                           key=f"csv_{game_id}")
 
-with st.expander("👥 Comptes utilisateurs"):
+    with st.expander("👥 Comptes utilisateurs"):
         users = query("SELECT * FROM users ORDER BY id DESC LIMIT 200")
         st.caption(f"{len(users)} compte(s) affiché(s)")
         for u in users:
@@ -1440,7 +1440,7 @@ with st.expander("👥 Comptes utilisateurs"):
                 flash("Compte supprimé.", "admin")
                 st.rerun()
 
-if game["status"] == "inscriptions":
+    if game["status"] == "inscriptions":
         st.markdown("**Participants inscrits**")
         for p in parts:
             c1, c2 = st.columns([5, 1])
@@ -1470,7 +1470,7 @@ if game["status"] == "inscriptions":
             reset_competition(game_id)
             st.rerun()
 
-st.divider()
+    st.divider()
     if st.checkbox("Afficher la suppression de la compétition", key=f"conf_{game_id}"):
         if st.button("❌ Supprimer définitivement cette compétition"):
             execute("DELETE FROM games WHERE id = ?", (game_id,))
